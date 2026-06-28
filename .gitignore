@@ -1,0 +1,26 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# OS
+.DS_Store
+.gstack/
+.vercel
+.env*
+
+# Convex generated
+convex/_generated/
