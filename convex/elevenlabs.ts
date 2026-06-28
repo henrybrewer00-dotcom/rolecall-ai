@@ -139,3 +139,40 @@ export const getInterviewConfig = action({
     };
   },
 });
+
+// A distinct, warm narrator voice (Brian) — not the buyer's voice.
+const NARRATOR_VOICE_ID = "nPczCjzI2devNBz1zQrb";
+
+/** ElevenLabs TTS for the scene narrator → base64 mp3 the client plays. */
+export const narrate = action({
+  args: { text: v.string(), voiceId: v.optional(v.string()) },
+  handler: async (_ctx, { text, voiceId }): Promise<{ audio: string | null }> => {
+    const key = process.env.ELEVENLABS_API_KEY;
+    const t = text.trim();
+    if (!key || !t) return { audio: null };
+    try {
+      const vid = voiceId || NARRATOR_VOICE_ID;
+      const res = await fetch(
+        `https://api.elevenlabs.io/v1/text-to-speech/${vid}?output_format=mp3_44100_128`,
+        {
+          method: "POST",
+          headers: { "xi-api-key": key, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: t.slice(0, 800),
+            model_id: "eleven_flash_v2_5", // lowest-latency TTS
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          }),
+        },
+      );
+      if (!res.ok) {
+        console.error("narrate tts error", res.status, await res.text());
+        return { audio: null };
+      }
+      const buf = await res.arrayBuffer();
+      return { audio: Buffer.from(buf).toString("base64") };
+    } catch (e) {
+      console.error("narrate tts error", e);
+      return { audio: null };
+    }
+  },
+});

@@ -6,7 +6,7 @@ import { Button, Spinner } from "@/components/ui";
 import { VoicePoweredOrb } from "@/components/VoicePoweredOrb";
 import { cn } from "@/lib/utils";
 import { Mic, X, Sparkles, Phone } from "lucide-react";
-import { speakNarration } from "@/lib/narrate";
+import { playNarration, speakNarration, stopNarration } from "@/lib/narrate";
 
 type Scenario = {
   buyerName: string;
@@ -39,6 +39,7 @@ export function PreviewCall({
   onClose: () => void;
 }) {
   const getPreviewConfig = useAction(api.elevenlabs.getPreviewConfig);
+  const narrate = useAction(api.elevenlabs.narrate);
   const [sc, setSc] = useState<Scenario>(scenario); // live scenario (updated by adjustments)
   const [phase, setPhase] = useState<"idle" | "connecting" | "live" | "ending">("idle");
   const [lastLine, setLastLine] = useState("");
@@ -74,14 +75,22 @@ export function PreviewCall({
       setError(null);
       // Fire the narrator synchronously (inside the click) so the browser doesn't block it.
       const narrationDone = withNarration
-        ? speakNarration(`Here's the situation. ${description}`, setNarrating)
+        ? (async () => {
+            const text = `Here's the situation. ${description}`;
+            try {
+              const r = await narrate({ text });
+              if (r?.audio) {
+                await playNarration(r.audio, setNarrating);
+                return;
+              }
+            } catch {
+              /* ignore */
+            }
+            await speakNarration(text, setNarrating);
+          })()
         : Promise.resolve();
       const abort = () => {
-        try {
-          window.speechSynthesis?.cancel();
-        } catch {
-          /* ignore */
-        }
+        stopNarration();
         setNarrating(false);
       };
       setPhase("connecting");
@@ -125,12 +134,12 @@ export function PreviewCall({
         setPhase("idle");
       }
     },
-    [conversation, getPreviewConfig, title, description, voiceId],
+    [conversation, getPreviewConfig, narrate, title, description, voiceId],
   );
 
   const stop = useCallback(async () => {
     setPhase("ending");
-    try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+    stopNarration();
     try {
       const t = Date.now();
       while (speakingRef.current && Date.now() - t < 4000) await new Promise((r) => setTimeout(r, 150));
@@ -150,10 +159,10 @@ export function PreviewCall({
     return () => {
       try {
         void conversation.endSession();
-        window.speechSynthesis?.cancel();
       } catch {
         /* ignore */
       }
+      stopNarration();
       recRef.current?.stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

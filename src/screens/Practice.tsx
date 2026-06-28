@@ -9,7 +9,7 @@ import { CallProgress } from "@/components/CallProgress";
 import { VoicePoweredOrb } from "@/components/VoicePoweredOrb";
 import { cn } from "@/lib/utils";
 import { Lightbulb } from "lucide-react";
-import { speakNarration } from "@/lib/narrate";
+import { playNarration, speakNarration, stopNarration } from "@/lib/narrate";
 
 type Turn = { who: "Rep" | "Buyer"; text: string };
 
@@ -29,6 +29,7 @@ export default function Practice() {
 
   const attempt = useQuery(api.attempts.get, { attemptId: aid });
   const getCallConfig = useAction(api.elevenlabs.getCallConfig);
+  const narrate = useAction(api.elevenlabs.narrate);
   const linkCall = useMutation(api.attempts.linkCall);
   const finishWithTranscript = useMutation(api.attempts.finishWithTranscript);
 
@@ -122,9 +123,22 @@ export default function Practice() {
     const narration = mod
       ? `Here's the situation. ${mod.description}${mod.goal ? ` Your goal: ${mod.goal}.` : ""}`
       : "";
-    const narrationDone = speakNarration(narration, setNarrating);
+    // Prefer a real ElevenLabs narrator voice; fall back to browser TTS.
+    const narrationDone = (async () => {
+      if (!narration.trim()) return;
+      try {
+        const r = await narrate({ text: narration });
+        if (r?.audio) {
+          await playNarration(r.audio, setNarrating);
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
+      await speakNarration(narration, setNarrating);
+    })();
     const abortNarration = () => {
-      try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+      stopNarration();
       setNarrating(false);
     };
     setPhase("connecting");
@@ -170,11 +184,11 @@ export default function Practice() {
       setError("Couldn't connect to the buyer. Check the ElevenLabs agent (overrides must be enabled).");
       setPhase("idle");
     }
-  }, [conversation, getCallConfig, linkCall, aid, attempt]);
+  }, [conversation, getCallConfig, narrate, linkCall, aid, attempt]);
 
   const hangUp = useCallback(async () => {
     setPhase("ending");
-    try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+    stopNarration();
     // Let the buyer finish their current sentence so the last line isn't cut off
     // mid-word — but cap the wait so hang-up always feels responsive.
     try {
