@@ -9,6 +9,7 @@ import { CallProgress } from "@/components/CallProgress";
 import { VoicePoweredOrb } from "@/components/VoicePoweredOrb";
 import { cn } from "@/lib/utils";
 import { Lightbulb } from "lucide-react";
+import { speakNarration } from "@/lib/narrate";
 
 type Turn = { who: "Rep" | "Buyer"; text: string };
 
@@ -20,41 +21,6 @@ Rep: Fair — we sit on top of what you have and kill the exceptions it kicks ou
 Buyer: Send me a one-pager and I'll look later.
 Rep: Could we grab 20 minutes Thursday to walk your real data?
 Buyer: Maybe. Send the one-pager first.`;
-
-/** Speak a scene-setting narration via the browser's TTS, before the buyer speaks. */
-function speakNarration(text: string, setNarrating: (b: boolean) => void): Promise<void> {
-  return new Promise((resolve) => {
-    try {
-      const synth = window.speechSynthesis;
-      if (!synth || !text.trim()) return resolve();
-      synth.cancel();
-      const u = new SpeechSynthesisUtterance(text.trim());
-      u.rate = 1.02;
-      u.pitch = 1;
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        setNarrating(false);
-        resolve();
-      };
-      const cap = setTimeout(finish, 18000); // never hang the call on TTS
-      u.onend = () => {
-        clearTimeout(cap);
-        finish();
-      };
-      u.onerror = () => {
-        clearTimeout(cap);
-        finish();
-      };
-      setNarrating(true);
-      synth.speak(u);
-    } catch {
-      setNarrating(false);
-      resolve();
-    }
-  });
-}
 
 export default function Practice() {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -150,10 +116,22 @@ export default function Practice() {
 
   const startCall = useCallback(async () => {
     setError(null);
+    // Fire the narrator IMMEDIATELY, inside the click gesture — browsers block
+    // speechSynthesis if it's called after async awaits (getUserMedia/getConfig).
+    const mod = attempt?.module;
+    const narration = mod
+      ? `Here's the situation. ${mod.description}${mod.goal ? ` Your goal: ${mod.goal}.` : ""}`
+      : "";
+    const narrationDone = speakNarration(narration, setNarrating);
+    const abortNarration = () => {
+      try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+      setNarrating(false);
+    };
     setPhase("connecting");
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
+      abortNarration();
       setError("Microphone access is required to take the call.");
       setPhase("idle");
       return;
@@ -162,23 +140,19 @@ export default function Practice() {
     try {
       config = await getCallConfig({ attemptId: aid });
     } catch {
+      abortNarration();
       setError("Couldn't load the buyer config.");
       setPhase("idle");
       return;
     }
     if (!config.configured || (!config.agentId && !config.signedUrl)) {
+      abortNarration();
       setNotice("Live voice isn't configured here. Use “End & score” to run the scoring flow with a sample call.");
       setPhase("idle");
       return;
     }
-    // Narrator sets the scene out loud before the buyer speaks.
-    const mod = attempt?.module;
-    if (mod) {
-      await speakNarration(
-        `Here's the situation. ${mod.description}${mod.goal ? ` Your goal: ${mod.goal}.` : ""}`,
-        setNarrating,
-      );
-    }
+    // Let the scene finish narrating before the buyer opens.
+    await narrationDone;
     try {
       const startArgs: Record<string, unknown> = {
         connectionType: "webrtc",

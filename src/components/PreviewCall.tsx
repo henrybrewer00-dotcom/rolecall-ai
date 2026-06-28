@@ -6,6 +6,7 @@ import { Button, Spinner } from "@/components/ui";
 import { VoicePoweredOrb } from "@/components/VoicePoweredOrb";
 import { cn } from "@/lib/utils";
 import { Mic, X, Sparkles, Phone } from "lucide-react";
+import { speakNarration } from "@/lib/narrate";
 
 type Scenario = {
   buyerName: string;
@@ -43,6 +44,7 @@ export function PreviewCall({
   const [lastLine, setLastLine] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
+  const [narrating, setNarrating] = useState(false);
   const [applying, setApplying] = useState(false);
   const [adjustNote, setAdjustNote] = useState<string | null>(null);
   const recRef = useRef<{ stop: () => void } | null>(null);
@@ -68,12 +70,25 @@ export function PreviewCall({
 
   /** Connect to the buyer built from a specific scenario. */
   const connect = useCallback(
-    async (useScenario: Scenario) => {
+    async (useScenario: Scenario, withNarration = true) => {
       setError(null);
+      // Fire the narrator synchronously (inside the click) so the browser doesn't block it.
+      const narrationDone = withNarration
+        ? speakNarration(`Here's the situation. ${description}`, setNarrating)
+        : Promise.resolve();
+      const abort = () => {
+        try {
+          window.speechSynthesis?.cancel();
+        } catch {
+          /* ignore */
+        }
+        setNarrating(false);
+      };
       setPhase("connecting");
       try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch {
+        abort();
         setError("Microphone access is needed to preview.");
         setPhase("idle");
         return;
@@ -82,15 +97,18 @@ export function PreviewCall({
       try {
         config = await getPreviewConfig({ title, description, scenario: useScenario, voiceId });
       } catch {
+        abort();
         setError("Couldn't build the buyer.");
         setPhase("idle");
         return;
       }
       if (!config.configured || (!config.agentId && !config.signedUrl)) {
+        abort();
         setError("Live voice isn't configured on this deployment.");
         setPhase("idle");
         return;
       }
+      await narrationDone; // let the scene finish before the buyer opens
       try {
         const args: Record<string, unknown> = {
           connectionType: "webrtc",
@@ -112,6 +130,7 @@ export function PreviewCall({
 
   const stop = useCallback(async () => {
     setPhase("ending");
+    try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
     try {
       const t = Date.now();
       while (speakingRef.current && Date.now() - t < 4000) await new Promise((r) => setTimeout(r, 150));
@@ -131,6 +150,7 @@ export function PreviewCall({
     return () => {
       try {
         void conversation.endSession();
+        window.speechSynthesis?.cancel();
       } catch {
         /* ignore */
       }
@@ -161,7 +181,7 @@ export function PreviewCall({
         } catch {
           /* ignore */
         }
-        await connect(next);
+        await connect(next, false); // reconnect (no narration) so the change is heard
         setAdjustNote(`Applied “${instruction}”.`);
       } else {
         setAdjustNote(`Applied “${instruction}”. Tap “Talk to the buyer” to hear it.`);
@@ -234,7 +254,9 @@ export function PreviewCall({
         <div className="mt-4 flex flex-col items-center">
           <VoicePoweredOrb active={conversation.isSpeaking} size={150} />
           <div className="mt-4 h-5 text-sm">
-            {phase === "connecting" && <span className="text-ink-500">Connecting…</span>}
+            {phase === "connecting" && (
+              <span className="text-ink-500">{narrating ? "🎙 Setting the scene…" : "Connecting…"}</span>
+            )}
             {live && <span className="font-mono font-semibold text-accent-600">● Live</span>}
             {phase === "idle" && <span className="text-ink-400">Tap to talk to {firstName}.</span>}
             {phase === "ending" && <span className="text-ink-500">Ending…</span>}
@@ -257,6 +279,19 @@ export function PreviewCall({
               </Button>
             )}
           </div>
+        </div>
+
+        {/* Current scenario — reflects live edits */}
+        <div className="mt-4 rounded-md border border-ink-900/10 bg-white p-3 text-left">
+          <div className="label mb-1 text-ink-400">Buyer right now</div>
+          <p className="text-xs leading-relaxed text-ink-600">{sc.personality}</p>
+          {sc.objections.filter(Boolean).length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {sc.objections.filter(Boolean).map((o, i) => (
+                <li key={i} className="text-xs italic text-ink-500">“{o}”</li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Adjust by voice */}

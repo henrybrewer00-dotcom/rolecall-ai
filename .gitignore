@@ -21,6 +21,3 @@ venv/
 .gstack/
 .vercel
 .env*
-
-# Convex generated
-convex/_generated/
