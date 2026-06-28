@@ -37,11 +37,60 @@ async function signedUrlFor(agentId: string): Promise<string | null> {
 
 type Scenario = { buyerName: string; buyerTitle: string; company: string; personality: string; objections: string[]; difficulty: string };
 
+/** Cerebras (instant) primary, OpenAI fallback — for generating the buyer's opening line. */
+function llmCfg(): { url: string; key: string | undefined; model: string } {
+  const c = process.env.CEREBRAS_API_KEY;
+  if (c) return { url: "https://api.cerebras.ai/v1/chat/completions", key: c, model: "gemma-4-31b" };
+  return { url: "https://api.openai.com/v1/chat/completions", key: process.env.OPENAI_API_KEY, model: "gpt-4o" };
+}
+
+/**
+ * The buyer's FIRST spoken line — in character, picking up the specific moment the
+ * narrator set up (not a cold-call greeting). Falls back to a neutral mid-scene opener.
+ */
+async function openingLine(title: string, description: string, s: Scenario): Promise<string> {
+  const fallback = "So — I've got a few things on my mind. Where do you want to start?";
+  const { url, key, model } = llmCfg();
+  if (!key) return fallback;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        temperature: 0.85,
+        max_tokens: 120,
+        messages: [
+          {
+            role: "system",
+            content:
+              `You are ${s.buyerName}, ${s.buyerTitle} at ${s.company}. Personality: ${s.personality}. ` +
+              "This is a SPECIFIC moment partway through a larger interaction — a narrator has already set the scene for the other person, and YOU speak first. " +
+              "Open THIS exact moment in character (pick up the conversation, raise the thing on your mind, or ask your question). Do NOT introduce yourself, greet generically, or say 'go ahead.' " +
+              "Reply with ONLY your first 1-2 spoken sentences — natural speech, no quotes, no stage directions.",
+          },
+          { role: "user", content: `Scenario "${title}": ${description}` },
+        ],
+      }),
+    });
+    if (!res.ok) return fallback;
+    const d = await res.json();
+    const line = String(d?.choices?.[0]?.message?.content ?? "")
+      .trim()
+      .replace(/^["'""]|["'""]$/g, "")
+      .trim();
+    return line || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** The buyer-in-character system prompt, shared by live calls and author previews. */
 function buildBuyerPrompt(title: string, description: string, s: Scenario): string {
   return [
     `You are ${s.buyerName}, ${s.buyerTitle} at ${s.company}.`,
     `You are the COUNTERPART in a practice roleplay titled "${title}" — this could be a sales prospect, a job interviewer, a hiring manager, a negotiator, a tough customer, etc. Stay fully in character as this specific person. You are NOT a helpful assistant, and do not assume it's a sales call unless the scenario clearly is one.`,
+    `IMPORTANT: this is NOT the start of a cold call. It's a SPECIFIC moment partway through a larger interaction — a narrator has already set the scene for the other person. You speak FIRST, opening THIS exact moment in character (pick up the conversation / ask what's on your mind). Do NOT introduce yourself, do NOT greet generically, and never say things like "go ahead."`,
     ``,
     `WHAT THIS SCENARIO IS ABOUT: ${description}`,
     `PERSONALITY: ${s.personality}`,
@@ -84,7 +133,7 @@ export const getCallConfig = action({
       agentId,
       signedUrl: await signedUrlFor(agentId),
       prompt: buildBuyerPrompt(data.module.title, data.module.description, s),
-      firstMessage: `${s.buyerName.split(" ")[0]} here... go ahead.`,
+      firstMessage: await openingLine(data.module.title, data.module.description, s),
       voiceId: data.module.voiceId ?? null,
       configured: Boolean(agentId),
     };
@@ -108,7 +157,7 @@ export const getPreviewConfig = action({
       agentId,
       signedUrl: await signedUrlFor(agentId),
       prompt: buildBuyerPrompt(title || "Practice scenario", description || "A practice roleplay.", scenario),
-      firstMessage: `${scenario.buyerName.split(" ")[0]} here... go ahead.`,
+      firstMessage: await openingLine(title || "Practice scenario", description || "A practice roleplay.", scenario),
       voiceId: voiceId ?? null,
       configured: Boolean(agentId),
     };
